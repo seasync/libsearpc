@@ -12,11 +12,7 @@ EXTRA_DIST = $(GNU_STANDARD_FILES) LICENSE.txt
 
 EXTRA_DIST += libsearpc.pc.in
 
-if COMPILE_DEMO
-  MAKE_DEMO = demo
-endif
-
-SUBDIRS = lib pysearpc ${MAKE_DEMO} tests
+SUBDIRS = lib pysearpc tests
 
 install-data-local:
 if MACOS

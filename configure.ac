@@ -33,8 +33,8 @@ LT_INIT
 # default: yes 
 AC_ARG_ENABLE([compile-demo],
 [AS_HELP_STRING([--enable-compile-demo],
-[compile demo programs @<:@default: yes@:>@])],
-[compile_demo=${enableval}], [compile_demo=yes])
+[compile demo programs @<:@default: false@:>@])],
+[compile_demo=${enableval}], [compile_demo=false])
 
 AM_CONDITIONAL([COMPILE_DEMO], [test x${compile_demo} = xyes])
 
@@ -111,7 +111,6 @@ fi
 
 AC_CONFIG_FILES([Makefile
                  lib/Makefile
-                 demo/Makefile
                  pysearpc/Makefile
                  libsearpc.pc
                  tests/Makefile])
