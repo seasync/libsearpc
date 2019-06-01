@@ -42,14 +42,8 @@ rm -rf $RPM_BUILD_ROOT
 
 %files
 %defattr(-,root,root,-)
+%{_bindir}/searpc-codegen.py
 %{_libdir}/pkgconfig/libsearpc.pc
-%{_libdir}/libsearpc.a
-%{_libdir}/libsearpc.la
-%{_libdir}/libsearpc.so
-%{_libdir}/libsearpc.so.1
-%{_libdir}/libsearpc.so.1.0.2
-%{_includedir}/searpc-client.h
-%{_includedir}/searpc-named-pipe-transport.h
-%{_includedir}/searpc-server.h
-%{_includedir}/searpc-utils.h
-%{_includedir}/searpc.h
+%{_libdir}/libsearpc.*
+%{_libdir}/python2.7/site-packages/pysearpc/
+%{_includedir}/searpc*
