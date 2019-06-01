@@ -6,7 +6,7 @@ Summary:	libsearpc - Seafile's RPC framework
 Group:		Libraries
 License:	Apache 2.0
 URL:		https://github.com/seasync/libsearpc
-Source0:	https://github.com/seasync/libsearpc/archive/%{version}-latest-mer.tar.gz
+Source0:	%{name}-%{version}.tar.bz2
 BuildRoot:	%{_tmppath}/%{name}-%{version}-%{release}-buildroot)
 
 BuildRequires:	automake
