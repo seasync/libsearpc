@@ -33,7 +33,9 @@ static char* formatErrorMessage();
 #endif // defined(WIN32)
 
 static void* named_pipe_listen(void *arg);
-static void* named_pipe_client_handler(void *arg);
+static void* handle_named_pipe_client_with_thread (void *arg);
+static void handle_named_pipe_client_with_threadpool(void *data, void *user_data);
+static void named_pipe_client_handler (void *data);
 static char* searpc_named_pipe_send(void *arg, const gchar *fcall_str, size_t fcall_len, size_t *ret_len);
 
 static char * request_to_json(const char *service, const char *fcall_str, size_t fcall_len);
@@ -41,8 +43,8 @@ static int request_from_json (const char *content, size_t len, char **service, c
 static void json_object_set_string_member (json_t *object, const char *key, const char *value);
 static const char * json_object_get_string_member (json_t *object, const char *key);
 
-static ssize_t pipe_write_n(SearpcNamedPipe fd, const void *vptr, size_t n);
-static ssize_t pipe_read_n(SearpcNamedPipe fd, void *vptr, size_t n);
+static gssize pipe_write_n(SearpcNamedPipe fd, const void *vptr, size_t n);
+static gssize pipe_read_n(SearpcNamedPipe fd, void *vptr, size_t n);
 
 typedef struct {
     SearpcNamedPipeClient* client;
@@ -75,6 +77,32 @@ SearpcNamedPipeServer* searpc_create_named_pipe_server(const char *path)
 {
     SearpcNamedPipeServer *server = g_malloc0(sizeof(SearpcNamedPipeServer));
     memcpy(server->path, path, strlen(path) + 1);
+
+    return server;
+}
+
+SearpcNamedPipeServer* searpc_create_named_pipe_server_with_threadpool (const char *path, int named_pipe_server_thread_pool_size)
+{
+    GError *error = NULL;
+
+    SearpcNamedPipeServer *server = g_malloc0(sizeof(SearpcNamedPipeServer));
+    memcpy(server->path, path, strlen(path) + 1);
+    server->named_pipe_server_thread_pool = g_thread_pool_new (handle_named_pipe_client_with_threadpool,
+                                                               NULL,
+                                                               named_pipe_server_thread_pool_size,
+                                                               FALSE,
+                                                               &error);
+    if (!server->named_pipe_server_thread_pool) {
+        if (error) {
+            g_warning ("Falied to create named pipe server thread pool : %s\n", error->message);
+            g_clear_error (&error);
+        } else {
+            g_warning ("Falied to create named pipe server thread pool.\n");
+        }
+        g_free (server);
+        return NULL;
+    }
+
     return server;
 }
 
@@ -100,7 +128,7 @@ int searpc_named_pipe_server_start(SearpcNamedPipeServer *server)
     }
 
     if (g_file_test (un_path, G_FILE_TEST_EXISTS)) {
-        g_debug ("socket file exists, delete it anyway\n");
+        g_message ("socket file exists, delete it anyway\n");
         if (g_unlink (un_path) < 0) {
             g_warning ("delete socket file failed : %s\n", strerror(errno));
             goto failed;
@@ -141,7 +169,6 @@ failed:
 }
 
 typedef struct {
-    SearpcNamedPipeServer *server;
     SearpcNamedPipe connfd;
 } ServerHandlerData;
 
@@ -151,14 +178,17 @@ static void* named_pipe_listen(void *arg)
 #if !defined(WIN32)
     while (1) {
         int connfd = accept (server->pipe_fd, NULL, 0);
-        pthread_t *handler = g_malloc(sizeof(pthread_t));
         ServerHandlerData *data = g_malloc(sizeof(ServerHandlerData));
-        data->server = server;
         data->connfd = connfd;
-        // TODO(low priority): Instead of using a thread to handle each client,
-        // use select(unix)/iocp(windows) to do it.
-        pthread_create(handler, NULL, named_pipe_client_handler, data);
-        server->handlers = g_list_append(server->handlers, handler);
+        if (server->named_pipe_server_thread_pool)
+            g_thread_pool_push (server->named_pipe_server_thread_pool, data, NULL);
+        else {
+            pthread_t handler;
+            pthread_attr_t attr;
+            pthread_attr_init(&attr);
+            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+            pthread_create(&handler, &attr, handle_named_pipe_client_with_thread, data);
+        }
     }
 
 #else // !defined(WIN32)
@@ -193,42 +223,56 @@ static void* named_pipe_listen(void *arg)
             break;
         }
 
-        g_debug ("Accepted a named pipe client\n");
+        /* g_debug ("Accepted a named pipe client\n"); */
 
-        pthread_t *handler = g_malloc(sizeof(pthread_t));
         ServerHandlerData *data = g_malloc(sizeof(ServerHandlerData));
-        data->server = server;
         data->connfd = connfd;
-        // TODO(low priority): Instead of using a thread to handle each client,
-        // use select(unix)/iocp(windows) to do it.
-        pthread_create(handler, NULL, named_pipe_client_handler, data);
-        server->handlers = g_list_append(server->handlers, handler);
+        if (server->named_pipe_server_thread_pool)
+            g_thread_pool_push (server->named_pipe_server_thread_pool, data, NULL);
+        else {
+            pthread_t handler;
+            pthread_attr_t attr;
+            pthread_attr_init(&attr);
+            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+            pthread_create(&handler, &attr, handle_named_pipe_client_with_thread, data);
+        }
     }
 #endif // !defined(WIN32)
     return NULL;
 }
 
-static void* named_pipe_client_handler(void *arg)
+static void* handle_named_pipe_client_with_thread(void *arg)
 {
-    ServerHandlerData *data = arg;
-    // SearpcNamedPipeServer *server = data->server;
-    SearpcNamedPipe connfd = data->connfd;
+    named_pipe_client_handler(arg);
+
+    return NULL;
+}
+
+static void handle_named_pipe_client_with_threadpool(void *data, void *user_data)
+{
+    named_pipe_client_handler(data);
+}
+
+static void named_pipe_client_handler(void *data)
+{
+    ServerHandlerData *handler_data = data;
+    SearpcNamedPipe connfd = handler_data->connfd;
 
     guint32 len;
     guint32 bufsize = 4096;
     char *buf = g_malloc(bufsize);
 
-    g_debug ("start to serve on pipe client\n");
+    g_message ("start to serve on pipe client\n");
 
     while (1) {
         len = 0;
         if (pipe_read_n(connfd, &len, sizeof(guint32)) < 0) {
-            g_warning("failed to read rpc request size: %s", strerror(errno));
+            g_warning("failed to read rpc request size: %s\n", strerror(errno));
             break;
         }
 
         if (len == 0) {
-            g_debug("EOF reached, pipe connection lost");
+            /* g_debug("EOF reached, pipe connection lost"); */
             break;
         }
 
@@ -238,8 +282,7 @@ static void* named_pipe_client_handler(void *arg)
         }
 
         if (pipe_read_n(connfd, buf, len) < 0 || len == 0) {
-            g_warning("failed to read rpc request: %s", strerror(errno));
-            g_free (buf);
+            g_warning("failed to read rpc request: %s\n", strerror(errno));
             break;
         }
 
@@ -255,13 +298,13 @@ static void* named_pipe_client_handler(void *arg)
 
         len = (guint32)ret_len;
         if (pipe_write_n(connfd, &len, sizeof(guint32)) < 0) {
-            g_warning("failed to send rpc response(%s): %s", ret_str, strerror(errno));
+            g_warning("failed to send rpc response(%s): %s\n", ret_str, strerror(errno));
             g_free (ret_str);
             break;
         }
 
         if (pipe_write_n(connfd, ret_str, ret_len) < 0) {
-            g_warning("failed to send rpc response: %s", strerror(errno));
+            g_warning("failed to send rpc response: %s\n", strerror(errno));
             g_free (ret_str);
             break;
         }
@@ -275,8 +318,8 @@ static void* named_pipe_client_handler(void *arg)
     DisconnectNamedPipe(connfd);
     CloseHandle(connfd);
 #endif // !defined(WIN32)
-
-    return NULL;
+    g_free (data);
+    g_free (buf);
 }
 
 
@@ -320,7 +363,7 @@ int searpc_named_pipe_client_connect(SearpcNamedPipeClient *client)
 
 #endif // !defined(WIN32)
 
-    g_debug ("pipe client connected to server\n");
+    /* g_debug ("pipe client connected to server\n"); */
     return 0;
 }
 
@@ -334,6 +377,7 @@ void searpc_free_client_with_pipe_transport (SearpcClient *client)
     close(pipe_client->pipe_fd);
 #endif
     g_free (pipe_client);
+    g_free (data->service);
     g_free (data);
     searpc_client_free (client);
 }
@@ -341,7 +385,7 @@ void searpc_free_client_with_pipe_transport (SearpcClient *client)
 char *searpc_named_pipe_send(void *arg, const gchar *fcall_str,
                              size_t fcall_len, size_t *ret_len)
 {
-    g_debug ("searpc_named_pipe_send is called\n");
+    /* g_debug ("searpc_named_pipe_send is called\n"); */
     ClientTransportData *data = arg;
     SearpcNamedPipeClient *client = data->client;
 
@@ -349,13 +393,13 @@ char *searpc_named_pipe_send(void *arg, const gchar *fcall_str,
     guint32 len = (guint32)strlen(json_str);
 
     if (pipe_write_n(client->pipe_fd, &len, sizeof(guint32)) < 0) {
-        g_warning("failed to send rpc call: %s", strerror(errno));
+        g_warning("failed to send rpc call: %s\n", strerror(errno));
         free (json_str);
         return NULL;
     }
 
     if (pipe_write_n(client->pipe_fd, json_str, len) < 0) {
-        g_warning("failed to send rpc call: %s", strerror(errno));
+        g_warning("failed to send rpc call: %s\n", strerror(errno));
         free (json_str);
         return NULL;
     }
@@ -363,14 +407,14 @@ char *searpc_named_pipe_send(void *arg, const gchar *fcall_str,
     free (json_str);
 
     if (pipe_read_n(client->pipe_fd, &len, sizeof(guint32)) < 0) {
-        g_warning("failed to read rpc response: %s", strerror(errno));
+        g_warning("failed to read rpc response: %s\n", strerror(errno));
         return NULL;
     }
 
     char *buf = g_malloc(len);
 
     if (pipe_read_n(client->pipe_fd, buf, len) < 0) {
-        g_warning("failed to read rpc response: %s", strerror(errno));
+        g_warning("failed to read rpc response: %s\n", strerror(errno));
         g_free (buf);
         return NULL;
     }
@@ -438,11 +482,11 @@ json_object_get_string_member (json_t *object, const char *key)
 #if !defined(WIN32)
 
 // Write "n" bytes to a descriptor.
-ssize_t
+gssize
 pipe_write_n(int fd, const void *vptr, size_t n)
 {
     size_t      nleft;
-    ssize_t     nwritten;
+    gssize     nwritten;
     const char  *ptr;
 
     ptr = vptr;
@@ -463,11 +507,11 @@ pipe_write_n(int fd, const void *vptr, size_t n)
 }
 
 // Read "n" bytes from a descriptor.
-ssize_t
+gssize
 pipe_read_n(int fd, void *vptr, size_t n)
 {
     size_t  nleft;
-    ssize_t nread;
+    gssize nread;
     char    *ptr;
 
     ptr = vptr;
@@ -489,7 +533,7 @@ pipe_read_n(int fd, void *vptr, size_t n)
 
 #else // !defined(WIN32)
 
-ssize_t pipe_read_n (SearpcNamedPipe fd, void *vptr, size_t n)
+gssize pipe_read_n (SearpcNamedPipe fd, void *vptr, size_t n)
 {
     DWORD bytes_read;
     BOOL success = ReadFile(
@@ -510,7 +554,7 @@ ssize_t pipe_read_n (SearpcNamedPipe fd, void *vptr, size_t n)
     return n;
 }
 
-ssize_t pipe_write_n(SearpcNamedPipe fd, const void *vptr, size_t n)
+gssize pipe_write_n(SearpcNamedPipe fd, const void *vptr, size_t n)
 {
     DWORD bytes_written;
     BOOL success = WriteFile(
@@ -521,37 +565,13 @@ ssize_t pipe_write_n(SearpcNamedPipe fd, const void *vptr, size_t n)
         NULL);                  // not overlapped I/O
 
     if (!success || bytes_written != (DWORD)n) {
-        G_WARNING_WITH_LAST_ERROR("failed to read command from the pipe");
+        G_WARNING_WITH_LAST_ERROR("failed to write to named pipe");
+        return -1;
     }
 
     FlushFileBuffers(fd);
     return 0;
 }
-
-static char *locale_to_utf8 (const gchar *src)
-{
-    if (!src)
-        return NULL;
-
-    gsize bytes_read = 0;
-    gsize bytes_written = 0;
-    GError *error = NULL;
-    gchar *dst = NULL;
-
-    dst = g_locale_to_utf8
-        (src,                   /* locale specific string */
-         strlen(src),           /* len of src */
-         &bytes_read,           /* length processed */
-         &bytes_written,        /* output length */
-         &error);
-
-    if (error) {
-        return NULL;
-    }
-
-    return dst;
-}
-
 
 // http://stackoverflow.com/questions/3006229/get-a-text-from-the-error-code-returns-from-the-getlasterror-function
 // The caller is responsible to free the returned message.
@@ -565,11 +585,12 @@ char* formatErrorMessage()
     FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM,
                    NULL,
                    error_code,
-                   MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                   /* EN_US */
+                   MAKELANGID(LANG_ENGLISH, 0x01),
                    buf,
                    sizeof(buf) - 1,
                    NULL);
-    return locale_to_utf8(buf);
+    return g_strdup(buf);
 }
 
 #endif // !defined(WIN32)
