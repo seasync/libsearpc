@@ -1,7 +1,7 @@
 Name:		libsearpc
 Version:	3.1
 Release:	1%{?dist}
-Summary:	libsearpc - Seafile's RPC framework	
+Summary:	libsearpc - Seafile's RPC framework
 
 Group:		Libraries
 License:	Apache 2.0
@@ -27,7 +27,7 @@ The RPC framework for Seafile
 
 %build
 %autogen.sh
-%configure
+%configure --prefix=/usr PYTHON='/usr/bin/python3'
 make %{?_smp_mflags}
 
 %install
