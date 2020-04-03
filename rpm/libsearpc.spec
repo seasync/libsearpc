@@ -34,7 +34,7 @@ make %{?_smp_mflags}
 %makeinstall
 
 %clean
-rm -rf $RPM_BUILD_ROOT
+rm -rf %{buildroot}
 
 %post -n %name -p /sbin/ldconfig
 
