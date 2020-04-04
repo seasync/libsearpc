@@ -1,3 +1,5 @@
+%define python3_sitearch %(%{__python3} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib(1))")
+
 Name:		libsearpc
 Version:	3.1
 Release:	1%{?dist}
@@ -47,5 +49,5 @@ rm -rf %{buildroot}
 %{_bindir}/searpc-codegen.py
 %{_libdir}/pkgconfig/libsearpc.pc
 %{_libdir}/libsearpc.*
-%{_libdir}/python2.7/site-packages/pysearpc/
+%{python3_sitearch}/*
 %{_includedir}/searpc*
