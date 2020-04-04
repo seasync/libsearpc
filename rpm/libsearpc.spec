@@ -14,6 +14,7 @@ BuildRequires:	autoconf
 BuildRequires:	libtool
 BuildRequires:	gobject-introspection-devel
 BuildRequires:  libjansson-devel
+BuildRequires:  python3-base
 
 Requires:	libjansson
 Requires:	gobject-introspection
