@@ -17,6 +17,7 @@ BuildRequires:  libjansson-devel
 
 Requires:	libjansson
 Requires:	gobject-introspection
+Requires:	python3-base
 
 %description
 The RPC framework for Seafile
